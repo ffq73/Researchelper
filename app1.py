@@ -12,6 +12,7 @@ from dashscope.audio.asr import Transcription
 import json
 import time
 import os
+import pathlib  # 🟢 新增：用于处理 Windows 路径
 
 # ==========================================
 # 0. 全局配置
@@ -25,7 +26,7 @@ if 'df_cache' not in st.session_state: st.session_state['df_cache'] = None
 if 'compliance_results' not in st.session_state: st.session_state['compliance_results'] = []
 
 # ==========================================
-# 1. 基础解析器 (文档处理)
+# 1. 基础解析器 (保持不变)
 # ==========================================
 def clean_text(text):
     if not text: return ""
@@ -46,7 +47,7 @@ def get_docx_text(file):
                 try:
                     for c in r.cells: txt.append(c.text)
                 except:
-                    try:
+                    try: # 暴力容错
                         for cell in r._element.tc_lst:
                             for p in cell.p_lst:
                                 nodes = p.xpath('.//w:t')
@@ -92,7 +93,7 @@ def dispatch_extractor(file):
     return set(), ""
 
 # ==========================================
-# 2. 模块：全格式核对 (分批次全量版)
+# 2. 模块：全格式核对 (AI 分批全量版)
 # ==========================================
 def run_ai_batch_check(api_key, context, targets):
     dashscope.api_key = api_key
@@ -175,15 +176,11 @@ def module_compliance(api_key):
                         return ['background-color: #ffcccc'] * len(row)
                     return [''] * len(row)
 
-                st.dataframe(
-                    res_df.style.apply(highlight_row, axis=1), 
-                    use_container_width=True
-                )
+                st.dataframe(res_df.style.apply(highlight_row, axis=1), use_container_width=True)
 
 # ==========================================
 # 3. 模块：智能制图 (范例仿制版)
 # ==========================================
-
 def ai_analyze_chart(api_key, df):
     dashscope.api_key = api_key
     data_sample = df.head(3).to_json(orient='records', force_ascii=False)
@@ -287,15 +284,15 @@ def module_smart_chart_ref(api_key):
             d2.download_button("📥 下载 PPT", ppt, "chart.pptx", key="dl_2")
 
 # ==========================================
-# 4. 模块：智能会议纪要 (真实 ASR 版)
+# 4. 模块：智能会议纪要 (修复 Windows 路径 & 崩溃问题)
 # ==========================================
 
 def module_meeting_real(api_key):
     st.header("🎙️ 智能会议纪要 (Paraformer 引擎)")
     st.markdown("上传录音 -> **阿里云 Paraformer 转写** -> 生成 **Q&A 结构化** 纪要。")
-    st.caption("⚠️ 注意：需要消耗 API 额度，支持长音频异步处理。")
+    st.caption("⚠️ 注意：需要消耗 API 额度，支持长音频异步处理。建议使用 MP3 格式。")
     
-    f = st.file_uploader("上传录音 (支持 mp3/wav/m4a)", type=['mp3','wav','m4a'], key="mf_real")
+    f = st.file_uploader("上传录音 (建议 MP3/WAV)", type=['mp3','wav','m4a'], key="mf_real")
     
     if f and st.button("开始真实转写与分析", key="btn_meet_real"):
         if not api_key:
@@ -304,40 +301,51 @@ def module_meeting_real(api_key):
 
         dashscope.api_key = api_key
         
-        # 1. 保存临时文件 (DashScope SDK 需要本地路径)
+        # 1. 保存临时文件 (关键修复：使用绝对路径)
         temp_filename = f"temp_meeting.{f.name.split('.')[-1]}"
         with open(temp_filename, "wb") as temp_f:
             temp_f.write(f.getbuffer())
         
+        # 获取绝对路径，并转为 Windows 兼容的 URL 格式
+        abs_path = pathlib.Path(temp_filename).resolve()
+        file_url = abs_path.as_uri() # 自动处理为 file:///C:/... 格式，防止 DECODE_ERROR
+        
         st.info(f"💾 文件已缓存，正在上传至语音引擎 (Size: {f.size/1024/1024:.2f}MB)...")
         
-        # 2. 调用 DashScope ASR (Paraformer)
         try:
-            # 使用异步任务接口，适合长音频
+            # 2. 调用 DashScope ASR
+            # 使用本地文件 URL 进行调用
             task_response = Transcription.async_call(
                 model='paraformer-v1',
-                file_urls=[f"file://{os.path.abspath(temp_filename)}"]
+                file_urls=[file_url] 
             )
             
             transcribe_state = st.empty()
-            transcribe_state.text("⏳ 正在进行语音识别，请稍候...")
+            progress_bar = st.progress(0)
+            transcribe_state.text("⏳ 正在进行语音识别 (云端处理中)...")
             
-            # 3. 轮询等待结果
+            # 3. 轮询等待
             task_id = task_response.output.task_id
             status = 'RUNNING'
+            start_time = time.time()
+            
             while status == 'RUNNING' or status == 'QUEUED':
-                time.sleep(2) # 每2秒查一次
+                time.sleep(3) # 避免频繁请求
                 wait_response = Transcription.wait(task=task_id)
                 status = wait_response.output.task_status
+                
+                # 简单模拟进度条 (因为不知道具体多久，假装在跑)
+                elapsed = time.time() - start_time
+                progress = min(elapsed / 60.0, 0.9) # 假设1分钟内能跑完大部分
+                progress_bar.progress(progress)
+
                 if status == 'SUCCEEDED':
+                    progress_bar.progress(1.0)
                     # 4. 获取转写文本
-                    # DashScope 返回的结果里包含了句子和说话人信息
                     results = wait_response.output.results
                     full_transcript = ""
-                    # 解析结果，拼接成文本
                     if results:
                         for sentence in results[0]['sentences']:
-                            # 尝试获取说话人 (如果有)
                             speaker = f"说话人{sentence.get('speaker_id', '?')}"
                             text = sentence['text']
                             full_transcript += f"{speaker}: {text}\n"
@@ -346,7 +354,7 @@ def module_meeting_real(api_key):
                     with st.expander("📄 查看识别原文"):
                         st.text_area("Transcript", full_transcript, height=200)
                     
-                    # 5. 调用 LLM 整理纪要
+                    # 5. 调用 LLM 整理
                     st.info("🧠 AI 正在整理 Q&A 结构...")
                     prompt = f"""
                     你是一个行研分析师。请根据以下会议录音转写文本，整理一份规范的会议纪要。
@@ -357,28 +365,33 @@ def module_meeting_real(api_key):
                     3. 去除口语废话，逻辑通顺。
                     
                     【转写文本】：
-                    {full_transcript[:15000]} (截取前1.5万字)
+                    {full_transcript[:20000]} 
                     """
                     
-                    llm_resp = dashscope.Generation.call(model='qwen-turbo', prompt=prompt)
-                    st.divider()
-                    st.markdown("### 📝 智能会议纪要")
-                    st.markdown(llm_resp.output.text)
-                    st.download_button("下载纪要 TXT", llm_resp.output.text, "minutes.txt")
+                    try:
+                        llm_resp = dashscope.Generation.call(model='qwen-turbo', prompt=prompt)
+                        st.divider()
+                        st.markdown("### 📝 智能会议纪要")
+                        st.markdown(llm_resp.output.text)
+                        st.download_button("下载纪要 TXT", llm_resp.output.text, "minutes.txt")
+                    except Exception as e:
+                        st.error(f"AI 整理失败: {e}")
                     
-                    # 清理临时文件
-                    os.remove(temp_filename)
                     break
                     
                 elif status == 'FAILED':
                     st.error(f"语音识别任务失败: {wait_response.output.message}")
+                    if "DECODE_ERROR" in str(wait_response.output.message):
+                        st.warning("💡 提示：DECODE_ERROR 通常意味着音频格式不兼容。请尝试将 m4a 转换为 mp3 格式后再上传。")
                     break
                     
         except Exception as e:
             st.error(f"发生错误: {e}")
-            # 尝试清理
-            if os.path.exists(temp_filename): os.remove(temp_filename)
-
+        finally:
+            # 清理临时文件 (放在 finally 里防止残留)
+            if os.path.exists(temp_filename): 
+                try: os.remove(temp_filename)
+                except: pass
 
 # ==========================================
 # 5. 主程序入口
