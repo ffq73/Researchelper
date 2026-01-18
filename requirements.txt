@@ -1,0 +1,7 @@
+streamlit
+pandas
+matplotlib
+python-pptx
+python-docx
+openpyxl
+dashscope
