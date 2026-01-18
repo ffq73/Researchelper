@@ -80,7 +80,8 @@ def get_excel_text(file):
         raw = "\n".join(txt)
         return split_segments(raw), raw
     except: return set(), ""
-
+    
+@st.cache_data(show_spinner=False)
 def dispatch_extractor(file):
     """根据后缀分发解析器"""
     if file.name.endswith('.docx'): return get_docx_text(file)
@@ -196,6 +197,7 @@ def module_meeting(api_key):
 # ==========================================
 # 4. 模块：智能制图 (范例仿制版)
 # ==========================================
+@st.cache_data(show_spinner=False)
 def ai_analyze_chart(api_key, df):
     """AI 分析引擎：决定怎么画"""
     dashscope.api_key = api_key
